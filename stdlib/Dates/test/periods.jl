@@ -30,6 +30,9 @@ using Test
     @test sign(t) == sign(t2) == 1
     @test sign(-t) == sign(-t2) == -1
     @test sign(Dates.Year(0)) == 0
+    @test signbit(t) == signbit(t2) == false
+    @test signbit(-t) == signbit(-t2) == true
+    @test signbit(Dates.Year(0)) == false
 end
 @testset "div/mod/gcd/lcm/rem" begin
     @test Dates.Year(10) % Dates.Year(4) == Dates.Year(2)
@@ -39,6 +42,10 @@ end
     @test div(Dates.Year(10), Dates.Year(4)) == 2
     @test div(Dates.Year(10), 4) == Dates.Year(2)
     @test Dates.Year(10) / Dates.Year(4) == 2.5
+    @test div(Dates.Hour(1), Dates.Minute(25), RoundUp) == 3
+    @test div(Dates.Hour(1), Dates.Minute(25), RoundDown) == 2
+    @test div(Dates.Year(1), Dates.Month(5), RoundNearest) == 2
+    @test_throws ErrorException div(Dates.Hour(1), Dates.Month(1), RoundDown)
 
     @test mod(Dates.Year(10), Dates.Year(4)) == Dates.Year(2)
     @test mod(Dates.Year(-10), Dates.Year(4)) == Dates.Year(2)
@@ -152,6 +159,9 @@ emptyperiod = ((y + d) - d) - y
     @test typeof(y + ms) <: Dates.CompoundPeriod
     @test typeof(y + us) <: Dates.CompoundPeriod
     @test typeof(y + ns) <: Dates.CompoundPeriod
+    @test zero(Dates.CompoundPeriod) == Dates.CompoundPeriod() == zero(y + ns)
+    @test iszero(Dates.CompoundPeriod())
+    @test iszero(Minute(1) - Second(60))
     @test y > m
     @test d < w
     @test mi < h
@@ -224,6 +234,8 @@ end
     @test Dates.string(Dates.Year(1)) == "1 year"
     @test Dates.string(Dates.Year(-1)) == "-1 year"
     @test Dates.string(Dates.Year(2)) == "2 years"
+    @test sprint(show, MIME("text/plain"), Dates.Hour(-2)) == "-2 hours"
+    @test endswith(repr(Dates.Hour(-2)), "Hour(-2)")
     @test isfinite(Dates.Year)
     @test isfinite(Dates.Year(0))
     @test zero(Dates.Year) == Dates.Year(0)
@@ -329,6 +341,14 @@ end
     @test Dates.default(Dates.Nanosecond) == zero(Dates.Nanosecond)
 end
 @testset "Conversions" begin
+    @test Dates.toms(1499 * us) == 1
+    @test Dates.toms(501 * us) == 1
+    @test Dates.toms(us) == 0
+
+    @test Dates.toms(1_499_999 * ns) == 1
+    @test Dates.toms(500_001 * ns) == 1
+    @test Dates.toms(ns) == 0
+
     @test Dates.toms(ms) == Dates.value(Dates.Millisecond(ms)) == 1
     @test Dates.toms(s)  == Dates.value(Dates.Millisecond(s)) == 1000
     @test Dates.toms(mi) == Dates.value(Dates.Millisecond(mi)) == 60000
@@ -343,6 +363,15 @@ end
     @test Dates.days(Dates.Hour(24)) == 1
     @test Dates.days(d) == 1
     @test Dates.days(w) == 7
+
+    @test Dates.seconds(ns) == 0.000000001
+    @test Dates.seconds(us) == 0.000001
+    @test Dates.seconds(ms) == 0.001
+    @test Dates.seconds(s) == 1
+    @test Dates.seconds(mi) == 60
+    @test Dates.seconds(h) == 3600
+    @test Dates.seconds(d) == 86400
+    @test Dates.seconds(w) == 604800
 end
 @testset "issue #9214" begin
     @test 2s + (7ms + 1ms) == (2s + 7ms) + 1ms == 1ms + (2s + 7ms) == 1ms + (1s + 7ms) + 1s == 1ms + (2s + 3d + 7ms) + (-3d) == (1ms + (2s + 3d)) + (7ms - 3d) == (1ms + (2s + 3d)) - (3d - 7ms)
@@ -365,6 +394,19 @@ end
     @test sprint(show, y + m) == string(y + m)
     @test convert(Dates.CompoundPeriod, y) + m == y + m
     @test Dates.periods(convert(Dates.CompoundPeriod, y)) == convert(Dates.CompoundPeriod, y).periods
+    @test -Dates.CompoundPeriod() == Dates.CompoundPeriod()
+    @test -(d - h) == -23h
+    @test (d - h) - (d - h) == Dates.CompoundPeriod()
+    @test Dates.periods(Dates.CompoundPeriod(Dates.Time(1, 2, 0, 4, 0, 6))) ==
+        Dates.Period[Dates.Hour(1), Dates.Minute(2), Dates.Millisecond(4), Dates.Nanosecond(6)]
+    @test isempty(Dates.periods(Dates.CompoundPeriod(Dates.Time(0))))
+    # the comparison with a Period is canonicalized and works in either argument order
+    @test 23h + 60mi == d
+    @test d == 23h + 60mi
+    @test d != 23h + 59mi
+    @test m != d + Dates.CompoundPeriod()
+    @test Dates.days(Dates.Week(1) + d) === 8.0
+    @test Dates.days(Dates.CompoundPeriod()) === 0.0
 end
 @testset "compound period simplification" begin
     # reduce compound periods into the most basic form
@@ -523,6 +565,7 @@ end
     @test convert(Second, Minute(1) + Second(30)) === Second(90)
     @test convert(Minute, Minute(1) + Second(60)) === Minute(2)
     @test convert(Millisecond, Minute(1) + Second(30)) === Millisecond(90_000)
+    @test convert(Millisecond,  Dates.CompoundPeriod()) === Millisecond(0)
     @test_throws InexactError convert(Minute, Minute(1) + Second(30))
     @test_throws MethodError convert(Month, Minute(1) + Second(30))
     @test_throws MethodError convert(Second, Month(1) + Second(30))

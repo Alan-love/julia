@@ -118,6 +118,10 @@ end
     @test big"1.0" == BigFloat(1.0)
     @test_throws ArgumentError big"1.0.3"
     @test_throws ArgumentError big"pi"
+
+    @test_throws ArgumentError big"_æ1"
+    @test_throws ArgumentError big"æ_1"
+    @test_throws ArgumentError big"_ææ"
 end
 
 @test round(UInt8, 123) == 123
@@ -202,7 +206,7 @@ end
         for T2 in Base.BitInteger_types
             for op in (>>, <<, >>>)
                 if sizeof(T2)==sizeof(Int) || T <: Signed || (op==>>>) || T2 <: Unsigned
-                    @test Core.Compiler.is_total(Base.infer_effects(op, (T, T2)))
+                    @test Core.Compiler.is_foldable_nothrow(Base.infer_effects(op, (T, T2)))
                 else
                     @test Core.Compiler.is_foldable(Base.infer_effects(op, (T, T2)))
                     # #47835, TODO implement interval arithmetic analysis
@@ -288,6 +292,19 @@ end
     U in [Base.BitInteger_types..., BigInt]
     @test typeof(rand(U(0):U(127)) % T) === T
 end
+@testset "rem, mod, clamp, typemin, typemax with Union{} throw MethodError" begin
+    # `Type{Union{}}` dispatches to its own method, which throws, instead of matching `Type{T}` methods
+    for f in (rem, mod, clamp), x in (1, big(1), 'a', 1.0)
+        @test_throws MethodError(f, (x, Union{})) f(x, Union{})
+        @test which(f, (typeof(x), Type{Union{}})).sig == Tuple{typeof(f), Any, Type{Union{}}, Vararg}
+    end
+    @test_throws MethodError(rem, (1, Union{}, RoundDown)) rem(1, Union{}, RoundDown)
+    for f in (typemin, typemax)
+        @test_throws MethodError(f, (Union{},)) f(Union{})
+        @test_throws MethodError(f, (Union{}, 1)) f(Union{}, 1)
+        @test which(f, (Type{Union{}},)).sig == Tuple{typeof(f), Type{Union{}}, Vararg}
+    end
+end
 
 @testset "Signed, Unsigned, signed, unsigned for bitstypes" begin
     for (S,U) in zip(Base.BitSigned_types, Base.BitUnsigned_types)
@@ -298,6 +315,35 @@ end
         @test -one(S) % Unsigned % Signed === -one(S)
         @test ~one(U) % Signed % Unsigned === ~one(U)
     end
+    # `Type{Union{}}` dispatches to its own method, which throws, instead of matching `Type{T}` methods
+    for f in (signed, unsigned)
+        @test_throws MethodError(f, (Union{},)) f(Union{})
+        @test_throws MethodError(f, (Union{}, 1)) f(Union{}, 1)
+        @test which(f, (Type{Union{}},)).sig == Tuple{typeof(f), Type{Union{}}, Vararg}
+    end
+end
+
+@testset "typemin typemax" begin
+    @test typemin(Int8   ) === Int8(-128)
+    @test typemax(Int8   ) === Int8(127)
+    @test typemin(UInt8  ) === UInt8(0)
+    @test typemax(UInt8  ) === UInt8(255)
+    @test typemin(Int16  ) === Int16(-32768)
+    @test typemax(Int16  ) === Int16(32767)
+    @test typemin(UInt16 ) === UInt16(0)
+    @test typemax(UInt16 ) === UInt16(65535)
+    @test typemin(Int32  ) === Int32(-2147483648)
+    @test typemax(Int32  ) === Int32(2147483647)
+    @test typemin(UInt32 ) === UInt32(0)
+    @test typemax(UInt32 ) === UInt32(4294967295)
+    @test typemin(Int64  ) === Int64(-9223372036854775808)
+    @test typemax(Int64  ) === Int64(9223372036854775807)
+    @test typemin(UInt64 ) === UInt64(0)
+    @test typemax(UInt64 ) === UInt64(0xffff_ffff_ffff_ffff)
+    @test typemin(UInt128) === UInt128(0)
+    @test typemax(UInt128) === UInt128(0xffff_ffff_ffff_ffff_ffff_ffff_ffff_ffff)
+    @test typemin(Int128 ) === Int128(-170141183460469231731687303715884105728)
+    @test typemax(Int128 ) === Int128(170141183460469231731687303715884105727)
 end
 
 @testset "issue #15489" begin
@@ -334,6 +380,36 @@ end
                 end
             end
         end
+    end
+    # exhaustive UInt8/Int8 tests for mixed signedness
+    for f in (mod, rem)
+        for i in -128:127
+            for j in 0:255
+                if iszero(i)
+                    @test_throws DivideError f(UInt8(j), Int8(i))
+                else
+                    @test f(UInt8(j), Int8(i)) == f(j, i)
+                end
+                if iszero(j)
+                    @test_throws DivideError f(Int8(i), UInt8(j))
+                else
+                    @test f(Int8(i), UInt8(j)) == f(i,j)
+                end
+            end
+        end
+    end
+end
+
+# Check both comparison directions at signed and unsigned limits, including equal values.
+@testset "mixed signedness comparisons" begin
+    for S in Base.BitSigned_types,
+        U in Base.BitUnsigned_types,
+        s in (typemin(S), S(-1), S(0), S(1), typemax(S)),
+        u in (U(0), U(1), typemax(U)),
+        op in (==, <, <=)
+
+        @test op(s, u) === op(BigInt(s), BigInt(u))
+        @test op(u, s) === op(BigInt(u), BigInt(s))
     end
 end
 
@@ -420,30 +496,6 @@ end
     @test bitreverse(0x80) === 0x01
     @test bitreverse(Int64(456618293)) === Int64(-6012608040035942400)
     @test bitreverse(Int32(456618293)) === Int32(-1399919400)
-end
-
-@testset "min/max of datatype" begin
-    @test typemin(Int8) === Int8(-128)
-    @test typemin(UInt8) === UInt8(0)
-    @test typemin(Int16) === Int16(-32768)
-    @test typemin(UInt16) === UInt16(0)
-    @test typemin(Int32) === Int32(-2147483648)
-    @test typemin(UInt32) === UInt32(0)
-    @test typemin(Int64) === Int64(-9223372036854775808)
-    @test typemin(UInt64) === UInt64(0)
-    @test typemin(Int128) === Int128(-170141183460469231731687303715884105728)
-    @test typemin(UInt128) === UInt128(0)
-
-    @test typemax(Int8) === Int8(127)
-    @test typemax(UInt8) === UInt8(255)
-    @test typemax(Int16) === Int16(32767)
-    @test typemax(UInt16) === UInt16(65535)
-    @test typemax(Int32) === Int32(2147483647)
-    @test typemax(UInt32) === UInt32(4294967295)
-    @test typemax(Int64) === Int64(9223372036854775807)
-    @test typemax(UInt64) === UInt64(0xffffffffffffffff)
-    @test typemax(Int128) === Int128(170141183460469231731687303715884105727)
-    @test typemax(UInt128) === UInt128(0xffffffffffffffffffffffffffffffff)
 end
 
 @testset "BitIntegerType" begin

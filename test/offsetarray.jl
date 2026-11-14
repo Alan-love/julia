@@ -247,17 +247,17 @@ PV = view(P, 2:3, :)
 
 # Similar
 B = similar(A, Float32)
-@test isa(B, OffsetArray{Float32,2})
+@test isa(B, OffsetMatrix{Float32})
 @test axes(B) === axes(A)
 B = similar(A, (3,4))
-@test isa(B, Array{Int,2})
+@test isa(B, Matrix{Int})
 @test size(B) == (3,4)
 @test axes(B) === (Base.OneTo(3), Base.OneTo(4))
 B = similar(A, (-3:3,1:4))
-@test isa(B, OffsetArray{Int,2})
+@test isa(B, OffsetMatrix{Int})
 @test axes(B) === (OffsetArrays.IdOffsetRange(Base.OneTo(7), -4), OffsetArrays.IdOffsetRange(Base.OneTo(4)))
 B = similar(parent(A), (-3:3,1:4))
-@test isa(B, OffsetArray{Int,2})
+@test isa(B, OffsetMatrix{Int})
 @test axes(B) === (OffsetArrays.IdOffsetRange(Base.OneTo(7), -4), OffsetArrays.IdOffsetRange(Base.OneTo(4)))
 
 # Indexing with OffsetArray indices
@@ -345,6 +345,10 @@ am = map(identity, a)
 @test isa(am, OffsetArray)
 @test am == a
 
+dest = OffsetVector(zeros(Int, 3), -2)
+@test asyncmap!(x -> 2x, dest, OffsetVector(1:3, -2)) == OffsetVector([2, 4, 6], -2)
+@test asyncmap!(xs -> map(x -> 2x[1], xs), dest, 4:6; batch_size=2) == OffsetVector([8, 10, 12], -2)
+
 # https://github.com/JuliaArrays/OffsetArrays.jl/issues/106
 @test isequal(map(!, OffsetArray([true,missing],2)), OffsetArray([false, missing], 2))
 @test isequal(map(!, OffsetArray([true missing; false true], 2, -1)), OffsetArray([false missing; true false], 2, -1))
@@ -383,6 +387,18 @@ v2 = copy(v)
 @test v2[end-1] == 2
 @test v2[end] == 1
 
+# push!(v::AbstractVector, x...)
+v2 = copy(v)
+@test @invoke(push!(v2::AbstractVector, 3)) === v2
+@test v2[axes(v,1)] == v
+@test v2[end] == 3
+@test v2[begin] == v[begin] == v[-2]
+v2 = copy(v)
+@test @invoke(push!(v2::AbstractVector, 5, 6)) == v2
+@test v2[axes(v,1)] == v
+@test v2[end-1] == 5
+@test v2[end] == 6
+
 # append! from array
 v2 = copy(v)
 @test append!(v2, [2, 1]) === v2
@@ -399,11 +415,29 @@ v2 = copy(v)
 @test v2[axes(v, 1)] == v
 @test v2[lastindex(v)+1:end] == [2, 1]
 
+# append!(::AbstractVector, ...)
+# append! from array
+v2 = copy(v)
+@test @invoke(append!(v2::AbstractVector, [2, 1]::Any)) === v2
+@test v2[axes(v, 1)] == v
+@test v2[lastindex(v)+1:end] == [2, 1]
+# append! from HasLength iterator
+v2 = copy(v)
+@test @invoke(append!(v2::AbstractVector, (v for v in [2, 1])::Any)) === v2
+@test v2[axes(v, 1)] == v
+@test v2[lastindex(v)+1:end] == [2, 1]
+# append! from SizeUnknown iterator
+v2 = copy(v)
+@test @invoke(append!(v2::AbstractVector, (v for v in [2, 1] if true)::Any)) === v2
+@test v2[axes(v, 1)] == v
+@test v2[lastindex(v)+1:end] == [2, 1]
+
 # other functions
 v = OffsetArray(v0, (-3,))
 @test lastindex(v) == 1
 @test v ≈ v
-@test axes(v') === (Base.OneTo(1), OffsetArrays.IdOffsetRange(Base.OneTo(4), -3))
+@test (@inferred axes(v')[1]) === OffsetArrays.IdOffsetRange(Base.OneTo(1))
+@test (@inferred axes(v')[2]) === OffsetArrays.IdOffsetRange(Base.OneTo(4), -3)
 @test parent(v) == collect(v)
 rv = reverse(v)
 @test axes(rv) == axes(v)
@@ -558,6 +592,8 @@ dest = OffsetArray(Matrix{Int}(undef, 4,4), (-1,1))
 circcopy!(dest, src)
 @test parent(dest) == [8 12 16 4; 5 9 13 1; 6 10 14 2; 7 11 15 3]
 @test dest[1:3,2:4] == src[1:3,2:4]
+dest = OffsetArray(zeros(Int, 2, 0), (1, 0))
+@test circcopy!(dest, zeros(Int, 2, 0)) === dest
 
 # reshape
 A = OffsetArray(rand(4,4), (-3,5))
@@ -567,6 +603,8 @@ A = OffsetArray(view(rand(4,4), 1:4, 4:-1:1), (-3,5))
 # issue #33614
 A = OffsetArray(-1:0, (-2,))
 @test reshape(A, :) === A
+@test axes(similar(typeof(A),axes(A))) == axes(A)
+@test eltype(similar(typeof(A),axes(A))) == eltype(A)
 Arsc = reshape(A, :, 1)
 Arss = reshape(A, 2, 1)
 @test Arsc[1,1] == Arss[1,1] == -1
@@ -627,15 +665,15 @@ end
     B = OffsetArray(reshape(1:24, 4, 3, 2), -5, 6, -7)
     for R in (fill(0, -4:-1), fill(0, -4:-1, 7:7), fill(0, -4:-1, 7:7, -6:-6))
         @test @inferred(maximum!(R, B)) == reshape(maximum(B, dims=(2,3)), axes(R)) == reshape(21:24, axes(R))
-        @test @allocated(maximum!(R, B)) <= 800
+        @test @allocated(maximum!(R, B)) <= 400
         @test @inferred(minimum!(R, B)) == reshape(minimum(B, dims=(2,3)), axes(R)) == reshape(1:4, axes(R))
-        @test @allocated(minimum!(R, B)) <= 800
+        @test @allocated(minimum!(R, B)) <= 400
     end
     for R in (fill(0, -4:-4, 7:9), fill(0, -4:-4, 7:9, -6:-6))
         @test @inferred(maximum!(R, B)) == reshape(maximum(B, dims=(1,3)), axes(R)) == reshape(16:4:24, axes(R))
-        @test @allocated(maximum!(R, B)) <= 800
+        @test @allocated(maximum!(R, B)) <= 400
         @test @inferred(minimum!(R, B)) == reshape(minimum(B, dims=(1,3)), axes(R)) == reshape(1:4:9, axes(R))
-        @test @allocated(minimum!(R, B)) <= 800
+        @test @allocated(minimum!(R, B)) <= 400
     end
     @test_throws DimensionMismatch maximum!(fill(0, -4:-1, 7:7, -6:-6, 1:1), B)
     @test_throws DimensionMismatch minimum!(fill(0, -4:-1, 7:7, -6:-6, 1:1), B)
@@ -676,6 +714,11 @@ end
     length(a) == 3
     axes(a,1) == -2:0
     @test_throws ArgumentError resize!(a,-3)
+end
+
+@testset "deleteat! with an offset mask" begin
+    m = OffsetVector([false, false, true], -1)
+    @test deleteat!(BitVector([0, 1, 0]), m) == deleteat!([false, true, false], m) == [false, true]
 end
 
 @testset "issue #37199: offset range indices" begin
@@ -748,6 +791,11 @@ end
     @test_throws BoundsError OffsetArray([6,7], 2:3)[]
     @test_throws BoundsError OffsetArray([6 7], 2:2, 2:3)[]
     @test_throws BoundsError OffsetArray([], 2:1)[]
+    A = [1 2; 3 4]
+    v = view(A, IdentityUnitRange(2:2), IdentityUnitRange(2:2))
+    @test v[] == 4
+    v[] = 10
+    @test A == [1 2; 3 10]
 end
 
 @testset "IdentityUnitRange indexing" begin
@@ -834,6 +882,18 @@ end
     @test axes(stack([ten[end-1:end] for _ in nought, _ in nought])) == (1:2, 0:2, 0:2)
 end
 
+@testset "reduce(vcat/hcat) of offset vector of arrays" begin
+    V = OffsetArray([[1, 2], [3, 4]], 0:1)
+    @test reduce(vcat, V) == [1, 2, 3, 4]
+    @test reduce(vcat, OffsetArray([[1 2], [3 4]], 0:1)) == [1 2; 3 4]
+    @test reduce(hcat, V) == [1 3; 2 4]
+    @test reduce(hcat, OffsetArray([[1, 2], view([3, 4], :)], 0:1)) == [1 3; 2 4]
+end
+
+@testset "hvncat of offset array and scalar" begin
+    @test hvncat(1, OffsetVector([1, 2], 5), 3) == [1, 2, 3]
+end
+
 @testset "issue #41630: replace_ref_begin_end!/@view on offset-like arrays" begin
     x = OffsetArray([1 2; 3 4], -10:-9, 9:10)  # 2×2 OffsetArray{...} with indices -10:-9×9:10
 
@@ -862,4 +922,61 @@ end
     # but the conversion to an OrdinalRange was not defined.
     # this is fixed in #40038, so the evaluation of its CartesianIndices should work
     @test CartesianIndices(A) == CartesianIndices(B)
+end
+
+@testset "overflowing show" begin
+    A = OffsetArray(repeat([1], 1), typemax(Int)-1)
+    b = IOBuffer(maxsize=10)
+    show(b, A)
+    @test String(take!(b)) == "[1]"
+    show(b, (A, A))
+    @test String(take!(b)) == "([1], [1])"
+end
+
+@testset "indexing views (#53249)" begin
+    v = view([1,2,3,4], :)
+    @test v[Base.IdentityUnitRange(2:3)] == OffsetArray(2:3, 2:3)
+end
+
+@testset "mapreduce with OffsetRanges" begin
+    r = 5:100
+    a = OffsetArray(r, 2)
+    b = sum(a, dims=1)
+    @test b[begin] == sum(r)
+end
+
+@testset "reshape" begin
+    A0 = [1 3; 2 4]
+    A = reshape(A0, 2:3, 4:5)
+    @test axes(A) == Base.IdentityUnitRange.((2:3, 4:5))
+
+    B = reshape(A0, -10:-9, 9:10)
+    @test isa(B, OffsetMatrix{Int})
+    @test parent(B) == A0
+    @test axes(B) == Base.IdentityUnitRange.((-10:-9, 9:10))
+end
+
+@testset "nextprod with offset factors" begin
+    @test nextprod(OffsetVector([2, 3, 5], -2), 105) == nextprod([2, 3, 5], 105) == 108
+end
+
+@testset "single-byte pattern search in offset vectors" begin
+    v = OffsetVector(UInt8[0x61, 0x62, 0x63, 0x62], -1)
+    @test findfirst(UInt8[0x61], v) == 0:0
+    @test findnext(UInt8[0x62], v, 1) == 1:1
+    @test findlast(UInt8[0x62], v) == 3:3
+    @test findprev(UInt8[0x62], v, 2) == 1:1
+end
+
+@testset "isvalid(String, ::OffsetVector)" begin
+    @test !isvalid(String, OffsetVector(UInt8[0xff, 0x61], -1))
+    @test isvalid(String, OffsetVector(UInt8[0x61, 0xce, 0xb2], 5))
+end
+
+@testset "SecretBuffer! from an OffsetVector" begin
+    d = OffsetVector(UInt8[0x61, 0x62], -1)
+    s = Base.SecretBuffer!(d)
+    @test read(s, String) == "ab"
+    @test all(iszero, d)
+    Base.shred!(s)
 end

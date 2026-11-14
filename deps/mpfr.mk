@@ -8,7 +8,7 @@ endif
 ifneq ($(USE_BINARYBUILDER_MPFR),1)
 
 MPFR_CONFIGURE_OPTS := $(CONFIGURE_COMMON)
-MPFR_CONFIGURE_OPTS += --enable-thread-safe --enable-shared-cache --disable-float128 --disable-decimal-float
+MPFR_CONFIGURE_OPTS += --enable-thread-safe --disable-float128 --disable-decimal-float
 MPFR_CONFIGURE_OPTS += --enable-shared --disable-static
 
 ifeq ($(USE_SYSTEM_GMP), 0)
@@ -20,6 +20,9 @@ ifeq ($(SANITIZE),1)
 MPFR_CONFIGURE_OPTS += --host=none-unknown-linux
 endif
 
+ifeq ($(OS),emscripten)
+MPFR_CONFIGURE_OPTS += CFLAGS="-fPIC"
+endif
 
 $(SRCCACHE)/mpfr-$(MPFR_VER).tar.bz2: | $(SRCCACHE)
 	$(JLDOWNLOAD) $@ https://www.mpfr.org/mpfr-$(MPFR_VER)/$(notdir $@)
@@ -27,7 +30,6 @@ $(SRCCACHE)/mpfr-$(MPFR_VER).tar.bz2: | $(SRCCACHE)
 $(SRCCACHE)/mpfr-$(MPFR_VER)/source-extracted: $(SRCCACHE)/mpfr-$(MPFR_VER).tar.bz2
 	$(JLCHECKSUM) $<
 	cd $(dir $<) && $(TAR) -jxf $<
-	cp $(SRCDIR)/patches/config.sub $(SRCCACHE)/mpfr-$(MPFR_VER)/config.sub
 	touch -c $(SRCCACHE)/mpfr-$(MPFR_VER)/configure # old target
 	echo 1 > $@
 
@@ -58,7 +60,7 @@ $(eval $(call staged-install, \
 
 clean-mpfr:
 	-rm -f $(BUILDDIR)/mpfr-$(MPFR_VER)/build-configured $(BUILDDIR)/mpfr-$(MPFR_VER)/build-compiled
-	-$(MAKE) -C $(BUILDDIR)/mpfr-$(MPFR_VER) clean
+	-if [ -d $(BUILDDIR)/mpfr-$(MPFR_VER) ]; then $(MAKE) -C $(BUILDDIR)/mpfr-$(MPFR_VER) clean; fi
 
 distclean-mpfr:
 	rm -rf $(SRCCACHE)/mpfr-$(MPFR_VER).tar.bz2 \

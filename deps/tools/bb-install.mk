@@ -1,3 +1,8 @@
+# Appends OS versions to the OS component of a triplet:
+#   $(call bb_triplet_add_os_version,x86_64-apple-darwin-libgfortran5,darwin=20 freebsd=14.1)
+# gives `x86_64-apple-darwin20-libgfortran5`.  Triplets whose OS is not listed are unchanged.
+bb_triplet_add_os_version = $(subst $(SPACE),-,$(foreach w,$(subst -,$(SPACE),$1),$(w)$(patsubst $(w)=%,%,$(filter $(w)=%,$2))))
+
 #$(call bb-install, \
 #    1 target, \               # name (lowercase)
 #    2 variable, \             # name (uppercase)
@@ -30,10 +35,17 @@ $(2)_JLL_DOWNLOAD_NAME ?= $$($(2)_JLL_NAME)
 # Allow things to provide platform tags
 $(2)_JLL_TAGS ?=
 
+# JLLs built with BinaryBuilder2 carry the OS version in the macOS and FreeBSD
+# triplets of their tarball names (e.g. `aarch64-apple-darwin20`).  Such JLLs
+# list the OS versions they were built against in their `.version` file, e.g.
+# `ZLIB_JLL_OS_VERSIONS := darwin=20 freebsd=14.1`.
+$(2)_JLL_OS_VERSIONS ?=
+
 $(2)_BB_TRIPLET := $$($$(TRIPLET_VAR))
+$(2)_JLL_TRIPLET := $$(call bb_triplet_add_os_version,$$($(2)_BB_TRIPLET),$$($(2)_JLL_OS_VERSIONS))
 $(2)_JLL_VER_NOPLUS := $$(firstword $$(subst +,$(SPACE),$$($(2)_JLL_VER)))
-$(2)_JLL_BASENAME := $$($(2)_JLL_DOWNLOAD_NAME).v$$($(2)_JLL_VER).$$($(2)_BB_TRIPLET)$$($(2)_JLL_TAGS).tar.gz
-$(2)_BB_URL := https://github.com/JuliaBinaryWrappers/$$($(2)_JLL_DOWNLOAD_NAME)_jll.jl/releases/download/$$($(2)_JLL_DOWNLOAD_NAME)-v$$($(2)_JLL_VER)/$$($(2)_JLL_DOWNLOAD_NAME).v$$($(2)_JLL_VER_NOPLUS).$$($(2)_BB_TRIPLET)$$($(2)_JLL_TAGS).tar.gz
+$(2)_JLL_BASENAME := $$($(2)_JLL_DOWNLOAD_NAME).v$$($(2)_JLL_VER).$$($(2)_JLL_TRIPLET)$$($(2)_JLL_TAGS).tar.gz
+$(2)_BB_URL := https://github.com/JuliaBinaryWrappers/$$($(2)_JLL_DOWNLOAD_NAME)_jll.jl/releases/download/$$($(2)_JLL_DOWNLOAD_NAME)-v$$($(2)_JLL_VER)/$$($(2)_JLL_DOWNLOAD_NAME).v$$($(2)_JLL_VER_NOPLUS).$$($(2)_JLL_TRIPLET)$$($(2)_JLL_TAGS).tar.gz
 
 $$(SRCCACHE)/$$($(2)_JLL_BASENAME): | $$(SRCCACHE)
 	$$(JLDOWNLOAD) $$@ $$($(2)_BB_URL)
@@ -55,9 +67,9 @@ ifneq (bsdtar,$(findstring bsdtar,$(TAR_TEST)))
 	@# work-around a gtar bug: they do some complicated work to avoid the mkdir
 	@# syscall, which is buggy when working with Tar.jl files so we manually do
 	@# the mkdir calls first in a pre-pass
-	$(TAR) -tzf $$< | xargs -n 1 dirname | sort -u | (cd $$(build_prefix) && xargs -t mkdir -p)
+	$$(TAR) -tzf $$< | xargs -n 1 dirname | sort -u | (cd $$(build_prefix) && xargs -t mkdir -p)
 endif
-	$(UNTAR) $$< -C $$(build_prefix)
+	$$(UNTAR) $$< -C $$(build_prefix)
 	echo '$$(UNINSTALL_$(strip $1))' > $$@
 
 # Special "checksum-foo" target to speed up `contrib/refresh_checksums.sh`

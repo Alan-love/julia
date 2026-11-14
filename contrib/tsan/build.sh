@@ -3,16 +3,25 @@
 
 #
 # Usage:
-#     contrib/tsan/build.sh <path> [<make_targets>...]
+#     contrib/tsan/build.sh [-j<N>] <path> [<make_targets>...]
 #
 # Build TSAN-enabled julia.  Given a workspace directory <path>, build
 # TSAN-enabled julia in <path>/tsan.  Required toolss are install under
 # <path>/toolchain.  Note that the same <path> passed to `contrib/asan/build.sh`
 # can be used to share the toolchain used for ASAN.  This scripts also takes
-# optional <make_targets> arguments which are passed to `make`.  The default
-# make target is `debug`.
+# optional <make_targets> arguments which are passed to `make`.
 
 set -ue
+set -x
+
+JOBS=1
+while getopts j: opt
+do
+    case $opt in
+        j) JOBS="$OPTARG";;
+    esac
+done
+shift $((OPTIND-1))
 
 # `$WORKSPACE` is a directory in which we create `toolchain` and `tsan`
 # sub-directories.
@@ -45,6 +54,12 @@ fi
 make -C "$TOOLCHAIN/deps" install-clang install-llvm-tools
 
 echo
+echo "Building bootstrap Julia..."
+BUILD="$WORKSPACE/bootstrap"
+
+make -j "$JOBS" O="$BUILD" julia-src-release julia-sysbase-release
+
+echo
 echo "Building Julia..."
 
 BUILD="$WORKSPACE/tsan"
@@ -54,4 +69,6 @@ if [ ! -d "$BUILD" ]; then
 fi
 
 cd "$BUILD"  # so that we can pass `-C src` to `make`
-make "$@"
+# Reporting tsan warnings will interfere with bootstrapping.
+export TSAN_OPTIONS="report_bugs=0 exitcode=0"
+make -j "$JOBS" "$@"

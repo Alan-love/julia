@@ -145,6 +145,7 @@ for (name, f) in l
 
     verbose && println("$name readuntil...")
     for (t, s, m, kept) in [
+            ("a", "", "", ""),
             ("a", "ab", "a", "a"),
             ("b", "ab", "b", "b"),
             ("α", "αγ", "α", "α"),
@@ -152,20 +153,27 @@ for (name, f) in l
             ("bc", "abc", "bc", "bc"),
             ("αβ", "αβγ", "αβ", "αβ"),
             ("aaabc", "ab", "aa", "aaab"),
+            ("aaabc", "b", "aaa", "aaab"),
             ("aaabc", "ac", "aaabc", "aaabc"),
             ("aaabc", "aab", "a", "aaab"),
             ("aaabc", "aac", "aaabc", "aaabc"),
             ("αααβγ", "αβ", "αα", "αααβ"),
+            ("αααβγ", "β", "ααα", "αααβ"),
             ("αααβγ", "ααβ", "α", "αααβ"),
             ("αααβγ", "αγ", "αααβγ", "αααβγ"),
             ("barbarbarians", "barbarian", "bar", "barbarbarian"),
             ("abcaabcaabcxl", "abcaabcx", "abca", "abcaabcaabcx"),
             ("abbaabbaabbabbaax", "abbaabbabbaax", "abba", "abbaabbaabbabbaax"),
             ("abbaabbabbaabbaabbabbaax", "abbaabbabbaax", "abbaabbabba", "abbaabbabbaabbaabbabbaax"),
+            ('a'^500 * 'x' * "bbbb", "x", 'a'^500, 'a'^500 * 'x'),
            ]
         local t, s, m, kept
         @test readuntil(io(t), s) == m
         @test readuntil(io(t), s, keep=true) == kept
+        if isone(length(s))
+            @test readuntil(io(t), first(s)) == m
+            @test readuntil(io(t), first(s), keep=true) == kept
+        end
         @test readuntil(io(t), SubString(s, firstindex(s))) == m
         @test readuntil(io(t), SubString(s, firstindex(s)), keep=true) == kept
         @test readuntil(io(t), GenericString(s)) == m
@@ -174,6 +182,18 @@ for (name, f) in l
         @test readuntil(io(t), unsafe_wrap(Vector{UInt8},s), keep=true) == unsafe_wrap(Vector{UInt8},kept)
         @test readuntil(io(t), collect(s)::Vector{Char}) == Vector{Char}(m)
         @test readuntil(io(t), collect(s)::Vector{Char}, keep=true) == Vector{Char}(kept)
+
+        buf = IOBuffer()
+        @test String(take!(copyuntil(buf, io(t), s))) == m
+        @test String(take!(copyuntil(buf, io(t), s, keep=true))) == kept
+        file = tempname()
+        for (k,m) in ((false, m), (true, kept))
+            open(file, "w") do f
+                @test f == copyuntil(f, io(t), s, keep=k)
+            end
+            @test read(file, String) == m
+        end
+        rm(file)
     end
     cleanup()
 
@@ -248,10 +268,24 @@ for (name, f) in l
             n2 = readbytes!(s2, a2)
             @test n1 == n2
             @test length(a1) == length(a2)
-            @test a1[1:n1] == a2[1:n2]
+            let l = min(l, n)
+                @test a1[1:l] == a2[1:l]
+            end
             @test n <= length(text) || eof(s1)
             @test n <= length(text) || eof(s2)
 
+            cleanup()
+        end
+
+        # Test growing output array
+        let x = UInt8[],
+            io = io()
+            n = readbytes!(io, x)
+            @test n == 0
+            @test isempty(x)
+            n = readbytes!(io, x, typemax(Int))
+            @test n == length(x)
+            @test x == codeunits(text)
             cleanup()
         end
 
@@ -281,8 +315,45 @@ for (name, f) in l
         cleanup()
 
         verbose && println("$name readline...")
-        @test readline(io(), keep=true) == readline(IOBuffer(text), keep=true)
-        @test readline(io(), keep=true) == readline(filename, keep=true)
+        file = tempname()
+        for lineending in ("\n", "\r\n", "")
+            kept = "foo bar" * lineending
+            t = isempty(lineending) ? "foo bar" : kept * "baz\n"
+            write(file, t)
+            @test readline(io(t)) == readline(file) == "foo bar"
+            @test readline(io(t), keep=true) == readline(file, keep=true) == kept
+
+            @test String(take!(copyline(IOBuffer(), file))) == "foo bar"
+            @test String(take!(copyline(IOBuffer(), file, keep=true))) == kept
+
+            cleanup()
+
+            buf = IOBuffer()
+            @test buf === copyline(buf, io(t))
+            @test String(take!(buf)) == "foo bar"
+            @test String(take!(copyline(buf, file, keep=true))) == kept
+            for keep in (true, false)
+                open(file, "w") do f
+                    @test f === copyline(f, io(t), keep=keep)
+                end
+                @test read(file, String) == (keep ? kept : "foo bar")
+            end
+
+            cleanup()
+
+            write(file, lineending)
+            @test readline(IOBuffer(lineending)) == ""
+            @test readline(IOBuffer(lineending), keep=true) == lineending
+            @test String(take!(copyline(IOBuffer(), IOBuffer(lineending)))) == ""
+            @test String(take!(copyline(IOBuffer(), IOBuffer(lineending), keep=true))) == lineending
+            @test readline(file) == ""
+            @test readline(file, keep=true) == lineending
+            @test String(take!(copyline(IOBuffer(), file))) == ""
+            @test String(take!(copyline(IOBuffer(), file, keep=true))) == lineending
+
+            cleanup()
+        end
+        rm(file)
 
         verbose && println("$name readlines...")
         @test readlines(io(), keep=true) == readlines(IOBuffer(text), keep=true)
@@ -307,6 +378,8 @@ for (name, f) in l
         verbose && println("$name readeach...")
         @test collect(readeach(io(), Char)) == Vector{Char}(text)
         @test collect(readeach(io(), UInt8)) == Vector{UInt8}(text)
+        @test eltype(readeach(IOBuffer(), Char)) <: Char
+        @test eltype(readeach(IOBuffer(), UInt8)) <: UInt8
 
         cleanup()
 
@@ -420,12 +493,6 @@ let s = "qwerty"
     @test read(IOBuffer(s)) == codeunits(s)
     @test read(IOBuffer(s), 10) == codeunits(s)
     @test read(IOBuffer(s), 1) == codeunits(s)[1:1]
-
-    # Test growing output array
-    x = UInt8[]
-    n = readbytes!(IOBuffer(s), x, 10)
-    @test x == codeunits(s)
-    @test n == length(x)
 end
 
 
@@ -613,7 +680,82 @@ let p = Pipe()
     @test data_read[1:nread] == data[2:nread+1]
     @test read(p.out, 49) == data[end-48:end]
     wait(t)
+
+    closewrite(p)
+    @test !isopen(p.in)
+    @test isopen(p.out)
     close(p)
+    @test !isopen(p.out)
+end
+
+@testset "Pipe writes" begin
+    p = Pipe()
+    Base.link_pipe!(p, reader_supports_async=true, writer_supports_async=true)
+    reader = @async read(p.out)
+    expected = UInt8[]
+    for x in ("abc", SubString("xdex", 2, 3), UInt8[1, 2], UInt16[3, 4])
+        @test writepartial(p, x) == sizeof(x)
+        append!(expected, x isa AbstractString ? codeunits(x) : reinterpret(UInt8, x))
+    end
+    @test write(p.in, UInt16[5 6]) == 4
+    append!(expected, reinterpret(UInt8, UInt16[5, 6]))
+    @test_throws "non-isbits" write(p.in, Any[1])
+    @test_throws "non-isbits" writepartial(p.in, Any[1])
+    close(p.in)
+    @test fetch(reader) == expected
+    close(p)
+end
+
+@testset "Pipe errors" begin
+    p = Pipe()
+    Base.link_pipe!(p, reader_supports_async=true, writer_supports_async=true)
+    @test_throws "pipe is already in use" Base.link_pipe!(p)
+    # the failed attempt must leave the original pipe working
+    @test write(p, "x") == 1
+    @test read(p, UInt8) == UInt8('x')
+    # Both ends of a pipe are readable on FreeBSD, where this read would block forever.
+    Sys.iswindows() || isreadable(p.in) || @test_throws "not readable" read(p.in, UInt8)
+    close(p)
+    @test_throws "pipe is already in use" Base.open_pipe!(p.out, Base.INVALID_OS_HANDLE)
+    @test Base.start_reading(p.out) == -1
+    Sys.iswindows() || @test_throws "invalid stdio type" open(Base.INVALID_OS_HANDLE)
+end
+
+@testset "stream status strings" begin
+    p = Pipe()
+    @test occursin(" init,", sprint(show, p.out))
+    Base.link_pipe!(p, reader_supports_async=true, writer_supports_async=true)
+    @test occursin(" open,", sprint(show, p.out))
+    reader = @async read(p.out, UInt8)
+    while p.out.status != Base.StatusActive && !istaskdone(reader)
+        yield()
+    end
+    @test occursin(" active,", sprint(show, p.out))
+    write(p.in, 0x01)
+    @test fetch(reader) == 0x01
+    # Windows stops reading outright when the read finishes, rather than pausing.
+    @test occursin(Sys.iswindows() ? " open," : " paused,", sprint(show, p.out))
+    close(p)
+    @test occursin(" closed,", sprint(show, p.out))
+
+    # states that are hard to observe on a real stream
+    live = Ptr{Cvoid}(1)
+    @testset for (handle, status, str) in (
+            (C_NULL, Base.StatusClosed, "closed"),
+            (C_NULL, Base.StatusUninit, "null"),
+            (C_NULL, Base.StatusOpen, "invalid status"),
+            (live, Base.StatusUninit, "uninit"),
+            (live, Base.StatusInit, "init"),
+            (live, Base.StatusConnecting, "connecting"),
+            (live, Base.StatusOpen, "open"),
+            (live, Base.StatusActive, "active"),
+            (live, Base.StatusPaused, "paused"),
+            (live, Base.StatusClosing, "closing"),
+            (live, Base.StatusClosed, "closed"),
+            (live, Base.StatusEOF, "eof"),
+            (live, -1, "invalid status"))
+        @test Base.uv_status_string((; handle, status)) == str
+    end
 end
 
 @testset "issue #27412" for itr in [eachline(IOBuffer("a")), readeach(IOBuffer("a"), Char)]
@@ -622,6 +764,53 @@ end
     @test !isempty(itr)
     first(itr) # consume the iterator
     @test  isempty(itr) # now it is empty
+end
+
+@testset "readuntil/copyuntil fallbacks" begin
+    # test fallback for generic delim::T
+    buf = IOBuffer()
+    fib = [1,1,2,3,5,8,13,21]
+    write(buf, fib)
+    @test readuntil(seekstart(buf), 21) == fib[1:end-1]
+    @test readuntil(buf, 21) == Int[]
+    @test readuntil(seekstart(buf), 21; keep=true) == fib
+    out = IOBuffer()
+    @test copyuntil(out, seekstart(buf), 21) === out
+    @test reinterpret(Int, take!(out)) == fib[1:end-1]
+    @test copyuntil(out, seekstart(buf), 21; keep=true) === out
+    @test reinterpret(Int, take!(out)) == fib
+end
+
+# IO types extending the documented signatures, which have no `cancel` keyword
+struct CopyUntilIO <: IO
+    b::IOBuffer
+end
+Base.eof(s::CopyUntilIO) = eof(s.b)
+Base.read(s::CopyUntilIO, ::Type{UInt8}) = read(s.b, UInt8)
+Base.copyuntil(out::IO, s::CopyUntilIO, d::UInt8; keep::Bool=false) = copyuntil(out, s.b, d; keep)
+struct ReadLineIO <: IO
+    b::IOBuffer
+end
+Base.eof(s::ReadLineIO) = eof(s.b)
+Base.readline(s::ReadLineIO; keep::Bool=false) = readline(s.b; keep)
+
+@testset "user IO methods without a cancel keyword" begin
+    io() = CopyUntilIO(IOBuffer("ab\ncd\r\nef"))
+    @test readline(io()) == "ab"
+    @test readline(io(); keep=true) == "ab\n"
+    @test readlines(io()) == ["ab", "cd", "ef"]
+    @test collect(eachline(io(); keep=true)) == ["ab\n", "cd\r\n", "ef"]
+    @test readuntil(io(), 'c') == "ab\n"
+    @test readuntil(io(), "c") == "ab\n"
+    @test readuntil(io(), 0x0a) == b"ab"
+    @test String(take!(copyline(IOBuffer(), io()))) == "ab"
+    @test String(take!(copyline(IOBuffer(), io(); keep=true))) == "ab\n"
+    @test String(take!(copyuntil(IOBuffer(), io(), 'c'))) == "ab\n"
+    let out = IOBuffer(collect(codeunits("xyz")); read=true, write=true)
+        copyline(out, CopyUntilIO(IOBuffer("ab\r\ncd")))
+        @test read(seekstart(out), String) == "abz"
+    end
+    @test collect(eachline(ReadLineIO(IOBuffer("ab\ncd")))) == ["ab", "cd"]
 end
 
 # more tests for reverse(eachline)
@@ -635,6 +824,12 @@ end
         @test last(eachline(seekstart(buf)),length(lines)*2) == lines
         @test reverse!(collect(Iterators.reverse(eachline(seek(buf, sum(sizeof, lines[1:100]) + 100*sizeof(eol)))))) == lines[101:end]
         @test isempty(Iterators.reverse(eachline(buf)))
+    end
+
+    # first line spanning more than one chunk (#64236)
+    for first in ("X", "XY"^3000), n in (4095, 4096, 8191, 8192, 12287)
+        lines = [first, 'a'^n]
+        @test reverse!(collect(Iterators.reverse(eachline(IOBuffer(join(lines, '\n')))))) == lines
     end
 
     let rempty = Iterators.reverse(eachline(IOBuffer()))
@@ -651,4 +846,22 @@ end
         @test Base.isdone(r)
         @test isempty(r) && isempty(collect(r))
     end
+end
+
+@testset "Ref API" begin
+    io = PipeBuffer()
+    @test write(io, Ref{Any}(0xabcd_1234)) === 4
+    @test read(io, UInt32) === 0xabcd_1234
+    @test_throws ErrorException("write cannot copy from a Ptr") invoke(write, Tuple{typeof(io), Ref{Cvoid}}, io, C_NULL)
+    @test_throws ErrorException("write cannot copy from a Ptr") invoke(write, Tuple{typeof(io), Ref{Int}}, io, Ptr{Int}(0))
+    @test_throws ErrorException("write cannot copy from a Ptr") invoke(write, Tuple{typeof(io), Ref{Any}}, io, Ptr{Any}(0))
+    @test_throws ErrorException("read! cannot copy into a Ptr") read!(io, C_NULL)
+    @test_throws ErrorException("read! cannot copy into a Ptr") read!(io, Ptr{Int}(0))
+    @test_throws ErrorException("read! cannot copy into a Ptr") read!(io, Ptr{Any}(0))
+    @test eof(io)
+    @test write(io, C_NULL) === sizeof(Int)
+    @test write(io, Ptr{Int}(4)) === sizeof(Int)
+    @test write(io, Ptr{Any}(5)) === sizeof(Int)
+    @test read!(io, Int[1, 2, 3]) == [0, 4, 5]
+    @test eof(io)
 end

@@ -58,7 +58,7 @@ end
     [option]
     """
     d = TOML.parse(s)
-    @test toml_str(d) == "user = \"me\"\n\n[julia]\n\n[option]\n"
+    @test toml_str(d; sorted=true) == "user = \"me\"\n\n[julia]\n\n[option]\n"
 end
 
 @testset "special characters" begin
@@ -67,9 +67,36 @@ end
     "\x7f" = "\x7f"
     """
     @test roundtrip(s)
+    @test toml_str(Dict("a" => "x\fy\rz")) == "a = \"x\\fy\\rz\"\n"
+    @test roundtrip("a = \"x\\fy\\rz\"")
 
     d = Dict("str" => string(Char(0xd800)))
     @test_throws ErrorException TOML.print(devnull, d)
+end
+
+@testset "printing Base.TOML dates and times" begin
+    # without Dates, Base's parser returns its own date and time structs
+    s = """
+    d = 1979-05-27
+    dt = 1979-05-27T07:32:00Z
+    dtms = 1979-05-27T07:32:00.099Z
+    t = 07:32:01.500
+    """
+    d = Base.TOML.parse(Base.TOML.Parser{nothing}(s))
+    @test d["t"] === Base.TOML.Time(7, 32, 1, 500)
+    @test toml_str(d; sorted=true) == s
+end
+
+@testset "conversion function results and printing to stdout" begin
+    @test_throws "did not return a valid TOML type but a `Complex{$Int}`" toml_str(x -> 2x, Dict("a" => 1im))
+    mktemp() do path, io
+        redirect_stdout(io) do
+            TOML.print(Dict("a" => 1))
+            TOML.print(x -> x.a, Dict("b" => MyStruct(2)))
+        end
+        close(io)
+        @test read(path, String) == "a = 1\nb = 2\n"
+    end
 end
 
 str = """
@@ -83,16 +110,35 @@ loaders = ["gzip", { driver = "csv", args = {delim = "\t"}}]
 @testset "vec with dicts and non-dicts" begin
     # https://github.com/JuliaLang/julia/issues/45340
     d =  Dict("b" => Any[111, Dict("a" =>  222, "d" => 333)])
-    @test toml_str(d) == "b = [111, {a = 222, d = 333}]\n"
+    @test toml_str(d) == (sizeof(Int) == 4 ?
+        "b = [111, {a = 222, d = 333}]\n" :
+        "b = [111, {d = 333, a = 222}]\n")
+
 
     d =  Dict("b" => Any[Dict("a" =>  222, "d" => 333), 111])
-    @test toml_str(d) == "b = [{a = 222, d = 333}, 111]\n"
+    @test toml_str(d) == (sizeof(Int) == 4 ?
+        "b = [{a = 222, d = 333}, 111]\n" :
+        "b = [{d = 333, a = 222}, 111]\n")
 
     d =  Dict("b" => Any[Dict("a" =>  222, "d" => 333)])
-    @test toml_str(d) == """
-    [[b]]
-    a = 222
-    d = 333
+    @test toml_str(d) == (sizeof(Int) == 4 ?
+        """
+        [[b]]
+        a = 222
+        d = 333
+        """ :
+        """
+        [[b]]
+        d = 333
+        a = 222
+        """)
+
+    # https://github.com/JuliaLang/julia/pull/57584
+    d = Dict("b" => [MyStruct(1), MyStruct(2)])
+    @test toml_str(d) do x
+        x isa MyStruct && return Dict("a" => x.a)
+    end == """
+    b = [{a = 1}, {a = 2}]
     """
 end
 
@@ -140,3 +186,76 @@ d = "hello"
 a = 2
 b = 9.9
 """
+
+
+inline_dict = Dict("a" => [1,2], "b" => Dict("a" => "b"), "c" => "foo")
+d = Dict(
+    "x" => "y",
+    "y" => inline_dict,
+    "z" => [1,2,3],
+)
+inline_tables = IdSet{Dict}()
+push!(inline_tables, inline_dict)
+@test toml_str(d; sorted=true, inline_tables) ==
+"""
+x = "y"
+y = {a = [1, 2], b = {a = "b"}, c = "foo"}
+z = [1, 2, 3]
+"""
+
+
+d = Dict("deps" => Dict(
+        "LocalPkg" => "fcf55292-0d03-4e8a-9e0b-701580031fc3",
+        "Example" => "7876af07-990d-54b4-ab0e-23690620f79a"),
+   "sources" => Dict(
+        "LocalPkg" => Dict("path" => "LocalPkg"),
+        "Example" => Dict("url" => "https://github.com/JuliaLang/Example.jl")))
+
+inline_tables = IdSet{Dict}()
+push!(inline_tables, d["sources"]["LocalPkg"])
+push!(inline_tables, d["sources"]["Example"])
+
+@test toml_str(d; sorted=true, inline_tables) ==
+"""
+[deps]
+Example = "7876af07-990d-54b4-ab0e-23690620f79a"
+LocalPkg = "fcf55292-0d03-4e8a-9e0b-701580031fc3"
+
+[sources]
+Example = {url = "https://github.com/JuliaLang/Example.jl"}
+LocalPkg = {path = "LocalPkg"}
+"""
+
+inline_tables = IdSet{Dict}()
+push!(inline_tables, d["sources"]["LocalPkg"])
+s = """
+[deps]
+Example = "7876af07-990d-54b4-ab0e-23690620f79a"
+LocalPkg = "fcf55292-0d03-4e8a-9e0b-701580031fc3"
+
+[sources]
+LocalPkg = {path = "LocalPkg"}
+
+    [sources.Example]
+    url = "https://github.com/JuliaLang/Example.jl"
+"""
+@test toml_str(d; sorted=true, inline_tables) == s
+@test roundtrip(s)
+
+
+# https://github.com/JuliaLang/julia/pull/57584
+d = Dict("a" => 1, "b" => 2)
+inline_tables = IdSet{Dict}([d])
+s = "{a = 1, b = 2}"
+@test toml_str(d; sorted=true, inline_tables) == s
+
+
+# multiline strings (#55083)
+s = """
+a = \"\"\"lorem ipsum
+
+
+
+alpha\"\"\"
+"""
+@test roundtrip(s)
